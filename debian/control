@@ -1,14 +1,18 @@
-Source: deepin-screenshot-v3
-Section: misc
-Priority: extra
-Maintainer: 宋文武 <songwenwu@linuxdeepin.com>
-Build-Depends: debhelper (>= 9)
-Standards-Version: 3.9.5
+Source: deepin-screenshot
+Section: gnome
+Priority: optional
+Maintainer: Zhang Cheng <zhangcheng@linuxdeepin.com>
+Build-Depends: debhelper (>= 8.0.0), python (>= 2.6.6-3~),python-epydoc
+Standards-Version: 3.9.2
+Homepage: http://www.linuxdeepin.com/
+Vcs-Git: git://github.com/linuxdeepin-packages/deepin-scrot.git
+#Vcs-Browser: http://git.debian.org/?p=collab-maint/deepin-scrot.git;a=summary
 
-Package: deepin-screenshot-v3
-Architecture: any
-Depends: ${misc:Depends}, python, python-pyqt5, deepin-social-sharing
-Provides: deepin-screenshot
-Conflicts: deepin-screenshot
-Replaces: deepin-screenshot
-Description: Advanced screen shoting tool
+Package: deepin-screenshot
+Architecture: all
+Depends: ${misc:Depends}, ${python:Depends}, gconf2, python-xlib, deepin-ui (>= 1+git201209291421), python-wnck, python-xdg
+Description: Deepin Screenshot Tool
+ Provide a quite easy-to-use screenshot tool. Features:
+    * Global hotkey to triggle screenshot tool
+    * Take screenshot of a selected area
+    * Easy to add text and line drawings onto the screenshot

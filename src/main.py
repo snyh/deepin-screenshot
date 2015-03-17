@@ -1,11 +1,18 @@
 #! /usr/bin/env python
 # -*- coding: utf-8 -*-
 
-# Copyright (C) 2011 ~ 2014 Deepin, Inc.
-#               2011 ~ 2014 Andy Stewart
+# Copyright (C) 2011 Deepin, Inc.
+#               2011 Wang Yong
 #
-# Author:     Andy Stewart <lazycat.manatee@gmail.com>
-# Maintainer: Andy Stewart <lazycat.manatee@gmail.com>
+# Author:     Wang Yong <lazycat.manatee@gmail.com>
+#             Zhang Cheng <zhangcheng@linuxdeepin.com>
+#             Hou ShaoHui <houshaohui@linuxdeepin.com>
+#             Long Changjin <admin@longchangjin.cn>
+
+# Maintainer: Wang Yong <lazycat.manatee@gmail.com>
+#             Zhang Cheng <zhangcheng@linuxdeepin.com>
+#             Hou Shaohui <houshaohui@linuxdeepin.com>
+#             Long Changjin <admin@longchangjin.cn>
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -20,427 +27,319 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import os
-import sys
-import time
-import signal
-import tempfile
+from bus import SCROT_BUS
+from action import *
+from draw import *
+from constant import *
+from window import *
+from nls import _
+from widget import RootWindow, RightMenu 
+from toolbar import Colorbar, Toolbar
+from deepin_utils.file import get_parent_dir
+from notify_dbus import notify
+import dss
+
+import pygtk
 import subprocess
+import config
 
-from PyQt5 import QtCore
-from PyQt5.QtCore import QCoreApplication
-if os.name == 'posix':
-    QCoreApplication.setAttribute(QtCore.Qt.AA_X11InitThreads, True)
+pygtk.require('2.0')
+import gtk
 
-from PyQt5.QtQuick import QQuickView
-from PyQt5.QtGui import (QSurfaceFormat, QColor, QImage,
-    QPixmap, QCursor, QKeySequence, qRed, qGreen, qBlue)
-from PyQt5.QtWidgets import QApplication, qApp, QFileDialog
-from PyQt5.QtCore import (pyqtSlot, QStandardPaths, QUrl,
-    QCommandLineParser, QCommandLineOption, QTimer, Qt)
-from PyQt5.QtDBus import QDBusConnection, QDBusInterface
-from PyQt5.QtMultimedia import QSoundEffect
-app = QApplication(sys.argv)
-app.setOrganizationName("Deepin")
-app.setApplicationName("Deepin Screenshot")
-app.setApplicationVersion("3.0")
-app.setQuitOnLastWindowClosed(False)
 
-from i18n import _
-from window_info import WindowInfo
-from menu_controller import MenuController
-from settings import ScreenShotSettings
-from dbus_services import is_service_exist, unregister_service
-from dbus_interfaces import controlCenterInterface
-from dbus_interfaces import notificationsInterface, socialSharingInterface
-from constants import MAIN_QML, SOUND_FILE, MAIN_DIR, TMP_IMAGE_FILE
+class DeepinScreenshot(object):
+    ''' Main Screenshot. '''
+    def __init__(self):
+        '''Init Main screenshot.'''
+        # Init.
+        self.action = ACTION_WINDOW         # current action status
+        # the windows in this workspace coordinate info
+        self.screenshot_window_info = get_screenshot_window_info()
+        #print "window info:", self.screenshot_window_info
+        self.monitor_x, self.monitor_y, self.width, self.height = get_current_monitor_info()
+        #self.width = SCREEN_WIDTH           # this monitor width
+        #self.height = SCREEN_HEIGHT         # this monitor height
+        #self.monitor_x = SCREEN_X           # this monitor source point's x coordinate
+        #self.monitor_y = SCREEN_Y           # this monitor source point's y coordinate
+        # the screenshot area's x, y, width, height
+        self.x = self.y = self.rect_width = self.rect_height = 0
 
-def init_cursor_shape_dict():
-    global cursor_shape_dict
+        self.save_op_index = SAVE_OP_AUTO   # current operation when the save button clicked
 
-    file_name_except_extension = lambda x: os.path.basename(x).split(".")[0]
+        #self.buttonToggle = None
+        self.drag_position = None
+        self.last_drag_position = None
+        self.dragStartX = self.dragStartY = self.dragStartOffsetX = self.dragStartOffsetY = 0
+        self.textDragOffsetX = self.textDragOffsetY = 0
+        
+        self.drag_flag = False              # a flag if the selected area can be dragged
+        self.show_toolbar_flag = False      # a flag if the toolbar has shown
+        self.show_colorbar_flag = False     # a flag if the colorbar has shown
+        self.show_text_window_flag = False  # a flag if the text_window has shown
+        self.text_drag_flag = False         # a flag if the text_window can be dragged
+        self.text_modify_flag = False       # a flag if the text has been modified
+        self.draw_text_layout_flag = False  # a flag if the text layout will be drawn
+        self.share_to_flag = False          # a flag if the screenshot will be shared
+        self.window_flag = True             # a flag if has not selected area or window
 
-    mouse_style_dir = os.path.join(MAIN_DIR, "image/mouse_style")
-    shape_dir = os.path.join(mouse_style_dir, "shape")
-    color_pen_dir = os.path.join(mouse_style_dir, "color_pen")
+        self.is_subprocess = config.OPTION_SUB
+        self.saveFiletype = 'png'
+        self.saveFilename = config.OPTION_FILE
+        
+        # make sure the toolbar in this monitor
+        self.toolbarOffsetX = self.monitor_x + 10
+        self.toolbarOffsetY = self.monitor_y + 10
+        #self.toolbarOffsetX = 10
+        #self.toolbarOffsetY = 10
+        #self.toolbar_height = 50
+        
+        self.action_size = ACTION_SIZE_SMALL    # the draw action's line width
+        self.action_color = "#FF0000"           # the draw action's color
+        self.font_name = "Sans"                 # the fontname of text to draw
+        self.font_size = 12                     # the fontsize of text to draw
+        
+        # Init action list.
+        self.current_action = None          # current drawing action
+        self.action_list = []               # a list of actions have created
+        self.current_text_action = None     # current drawing text action
+        self.text_action_list = []          # a list of text actions have created
+        self.text_action_info = {}          # the created text actions' info
 
-    for _file in os.listdir(shape_dir):
-        key = CURSOR_SHAPE_SHAPE_PREFIX + file_name_except_extension(_file)
-        cursor_shape_dict[key] = os.path.join(shape_dir, _file)
+        # Get desktop background.
+        # a gtk.gdk.Pixbuf of the desktop_background
+        self.desktop_background = self.get_desktop_snapshot()
+        # a string containing the pixel data of the pixbuf
+        self.desktop_background_pixels= self.desktop_background.get_pixels()
+        # the number of the pixbuf channels.
+        self.desktop_background_n_channels = self.desktop_background.get_n_channels()
+        # the number of bytes between rows.
+        self.desktop_background_rowstride = self.desktop_background.get_rowstride()
+        
+        # Init window.
+        self.window = RootWindow(self)
+        
+        # Init toolbar window.
+        self.toolbar = Toolbar(self.window.window, self)
+        
+        # Init color window.
+        self.colorbar = Colorbar(self.window.window, self)
 
-    for _file in os.listdir(color_pen_dir):
-        key = CURSOR_SHAPE_COLOR_PEN_PREFIX + file_name_except_extension(_file)
-        cursor_shape_dict[key] = os.path.join(color_pen_dir, _file)
+        # right button press menu
+        self.right_menu = RightMenu(self)
+        # Show.
+        self.window.show()
+        self.window.set_cursor(ACTION_WINDOW)
+        dss.hide()
 
-CURSOR_SHAPE_SHAPE_PREFIX = "shape_"
-CURSOR_SHAPE_COLOR_PEN_PREFIX = "color_pen_"
-SAVE_DEST_TEMP = os.path.join(tempfile.gettempdir() or "/tmp",
-                              "DeepinScreenshot-save-tmp.png")
-ACTION_ID_OPEN = "id_open"
-cursor_shape_dict = {}
-init_cursor_shape_dict()
-
-soundEffect = QSoundEffect()
-soundEffect.setSource(QUrl(SOUND_FILE))
-settings = ScreenShotSettings()
-
-view = None
-_notificationId = None
-_fileSaveLocation = None
-
-class Window(QQuickView):
-    def __init__(self, settings, windowInfo):
-        QQuickView.__init__(self)
-        self._settings = settings
-
-        surface_format = QSurfaceFormat()
-        surface_format.setAlphaBufferSize(8)
-
-        self.set_cursor_shape("shape_start_cursor")
-        self.setColor(QColor(0, 0, 0, 0))
-        self.setFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
-        self.setResizeMode(QQuickView.SizeRootObjectToView)
-        self.setFormat(surface_format)
-        self.setTitle(_("Deepin screenshot"))
-
-        self.qimage = QImage(self._settings.tmpImageFile)
-        self.qpixmap = QPixmap()
-        self.qpixmap.convertFromImage(self.qimage)
-
-        self.window_info = windowInfo
-
-        self._grabPointerStatus = False
-        self._grabKeyboardStatus = False
-        self._grabFocusTimer = self._getGrabFocusTimer()
-
-        self._osdShowed = False
-        self._osdShowing = False
-        self._quitOnOsdTimeout = False
-
-    @pyqtSlot(int, int, result="QVariant")
-    def get_color_at_point(self, x, y):
-        if x >= 0 and y >= 0:
-            rgb = self.qimage.pixel(x, y)
-            return [qRed(rgb), qGreen(rgb), qBlue(rgb)]
+    def set_action_type(self, action_type):
+        '''
+        Set action type
+        @param action_type: one of ACTION Type Constants 
+        '''
+        self.action = action_type    
+        self.current_action = None
+    
+    def save_snapshot(self, filename=None, filetype='png', clip_flag=False):
+        '''
+        Save snapshot.
+        @param filename: the filename to save, a string type
+        @param filetype: the filetype to save, a string type. Default is 'png'
+        @param clip_flag: a flag if copy the snapshot to clipboard. Default is False
+        '''
+        failed_flag = False
+        tipContent = ""
+        parent_dir = get_parent_dir(__file__, 1)
+        # Save snapshot.
+        if self.rect_width == 0 or self.rect_height == 0:
+            tipContent = _("The width or height of selected area cannot be 0")
+            failed_flag = True
         else:
-            return [0, 0, 0]
-
-    @pyqtSlot(result="QVariant")
-    def get_window_info_at_pointer(self):
-        wInfo = self.window_info.get_window_info_at_pointer()
-        wInfo[0] -= self.x()
-        wInfo[1] -= self.y()
-        return wInfo
-
-    @pyqtSlot(result="QVariant")
-    def get_cursor_pos(self):
-        '''
-        get the cursor position relative to the top-left corner of this window
-        '''
-        pos = QCursor.pos()
-        pos.setX(pos.x() - self.x())
-        pos.setY(pos.y() - self.y())
-        return pos
-
-    @pyqtSlot(str)
-    def set_cursor_shape(self, shape):
-        '''
-        Set the shape of cursor, the param shape should be one of the keys
-        of the global variable cursor_shape_dict.
-        '''
-        if cursor_shape_dict.get(shape):
-            pix = QPixmap(cursor_shape_dict[shape])
-            if shape == "shape_start_cursor":
-                cur = QCursor(pix, hotX=8, hotY=8)
-            elif shape.startswith(CURSOR_SHAPE_COLOR_PEN_PREFIX):
-                cur = QCursor(pix, hotX=0, hotY=pix.height())
+            self.window.finish_flag = True
+            surface = self.make_pic_file(
+                self.desktop_background.subpixbuf(*self.get_rectangel_in_monitor()))
+            # Save to file
+            if filename:
+                tipContent = "%s '%s'" % (_("Picture has been saved to file"), filename)
+                try:
+                    surface.write_to_png(filename)
+                    SCROT_BUS.emit_finish(1, filename)
+                    # copy to clipboard
+                    if clip_flag:
+                        pixbuf = gtk.gdk.pixbuf_new_from_file(filename)
+                        clipboard = gtk.Clipboard(selection="CLIPBOARD")
+                        clipboard.set_image(pixbuf)
+                        clipboard.store()
+                        #tipContent +=  _("Picture has been saved to clipboard")
+                        #try:
+                            #cmd = ('python2', '%s/%s' % (parent_dir, 'tipswindow.py'), _("Picture has been saved to clipboard"), '1')
+                            #subprocess.Popen(cmd)
+                        #except OSError:    
+                            #cmd = ('python', '%s/%s' % (parent_dir, 'tipswindow.py'), _("Picture has been saved to clipboard"), '1')
+                            #subprocess.Popen(cmd)
+                        #notify("Deepin Screenshot", 0, summary=_("DSnapshot"), body=tipContent)
+                        
+                except Exception, e:
+                    tipContent = "%s:%s" % (_("Failed to save the picture"), str(e))
+            # Save snapshot to clipboard
             else:
-                cur = QCursor(pix, hotX=5, hotY=5)
-        else:
-            cur = QCursor(Qt.ArrowCursor)
-        self.setCursor(cur)
+                import StringIO
+                fp = StringIO.StringIO()
+                surface.write_to_png(fp)
+                contents = fp.getvalue()
+                fp.close()
+                loader = gtk.gdk.PixbufLoader("png")
+                loader.write(contents, len(contents))
+                pixbuf = loader.get_pixbuf()
+                loader.close()
 
-    @pyqtSlot(str,int,int,int,int)
-    def save_overload(self, style, x, y, width, height):
-        mosaic_radius = 10
-        blur_radius = 10
+                clipboard = gtk.Clipboard(selection="CLIPBOARD")
+                if pixbuf:
+                    clipboard.set_image(pixbuf)
+                clipboard.store()
+                tipContent += _("Picture has been saved to clipboard")
 
-        p = QPixmap.fromImage(self.grabWindow())
-        p = p.copy(x,y,width,height)
+        # Exit
+        self.window.destroy_all()
+        if self.share_to_flag and not failed_flag:
+            # share window
+            win_x = self.monitor_x + (self.width / 2) - 300
+            win_y = self.monitor_y + (self.height/ 2) - 200
+            try:
+                cmd = ('python2', '%s/%s' % (parent_dir, 'share.py'), filename, str(win_x), str(win_y))
+                subprocess.Popen(cmd)
+            except OSError:    
+                cmd = ('python', '%s/%s' % (parent_dir, 'share.py'), filename, str(win_x), str(win_y))
+                subprocess.Popen(cmd)
+        
+        # tipWindow
+        #try:
+            #cmd = ('python2', '%s/%s' % (parent_dir, 'tipswindow.py'), tipContent)
+            #subprocess.Popen(cmd)
+        #except OSError:    
+            #cmd = ('python', '%s/%s' % (parent_dir, 'tipswindow.py'), tipContent)
+            #subprocess.Popen(cmd)
+        notify("Deepin Screenshot", 0, summary=_("DScreenshot"), body=tipContent)
+        if config.OPTION_ICON:
+            notify("Deepin Screenshot", 0, summary=_("DScreenshot"),
+                   body=_("Next time you can just press Ctrl+Alt+A to start."))
 
-        if style == "mosaic":
-            p = p.scaled(width / mosaic_radius, height / mosaic_radius,
-                         Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-            p = p.scaled(width, height)
-        elif style == "blur":
-            p = p.scaled(width / blur_radius, height / blur_radius,
-                         Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-            p = p.scaled(width, height,
-                         Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+    def make_pic_file(self, pixbuf):
+        '''
+        use cairo to make a picture file
+        @param pixbuf: gtk.gdk.Pixbuf
+        @return: a cairo.ImageSurface object
+        '''
+        surface = cairo.ImageSurface(cairo.FORMAT_RGB24, pixbuf.get_width(), pixbuf.get_height())
+        cr = cairo.Context(surface)
+        gdkcr = gtk.gdk.CairoContext(cr)
+        gdkcr.set_source_pixbuf(pixbuf, 0, 0)
+        gdkcr.paint()
 
-        image_dir = "/tmp/deepin-screenshot-%s.png" % style
-        p.save(os.path.join(image_dir))
+        for action in self.action_list:
+            if action is not None:
+                action.start_x -= self.x - self.monitor_x
+                action.start_y -= self.y - self.monitor_y
+                if not isinstance(action, (TextAction)):
+                    action.end_x -= self.x - self.monitor_x
+                    action.end_y -= self.y - self.monitor_y
+                if isinstance(action, (LineAction)):
+                    for track in action.track:
+                        track[0] -= self.x - self.monitor_x
+                        track[1] -= self.y - self.monitor_y
+                action.expose(cr)
+        
+        # Draw Text Action list.
+        for each in self.text_action_list:
+            if each is not None:
+                each.expose(cr)
+        return surface
+    
+    def save_to_tmp_file(self):
+        if self.rect_width > 0 and self.rect_height > 0:
+            from tempfile import mkstemp
+            import os
+            tmp = mkstemp(".tmp", "deepin-screenshot")
+            os.close(tmp[0])
+            filename = tmp[1]
+            self.window.finish_flag = True
+            surface = self.make_pic_file(
+                self.desktop_background.subpixbuf(*self.get_rectangel_in_monitor()))
+            surface.write_to_png(filename)
+            SCROT_BUS.emit_finish(1, filename)
+        gtk.main_quit()
+        return filename
 
-    def _getGrabFocusTimer(self):
-        timer = QTimer()
-        timer.setSingleShot(True)
-        timer.setInterval(100)
-        timer.timeout.connect(self._grabFocusInternal)
-        return timer
+    def parse_barcode(self):
+        filename = self.save_to_tmp_file()
+        import os
+        from debarcode import debarcode
+        print filename
+        print debarcode(filename)
+        os.remove(filename)
 
-    def _grabFocusInternal(self):
-        if not self._grabPointerStatus:
-            self._grabPointerStatus = self.setMouseGrabEnabled(True)
-        if not self._grabKeyboardStatus:
-            self._grabKeyboardStatus = self.setKeyboardGrabEnabled(True)
+    def get_desktop_snapshot(self):
+        '''
+        Get desktop snapshot.
+        @return: a gtk.gdk.Pixbuf object
+        '''
+        return get_screenshot_pixbuf()
+        
+    def undo(self, widget=None):
+        '''
+        Undo the last action.
+        '''
+        if self.show_text_window_flag:
+            self.window.hide_text_window()
+        if self.current_text_action:
+            self.current_text_action = None
 
-        if not (self._grabPointerStatus and self._grabKeyboardStatus):
-            self._grabFocusTimer.start()
+        if self.action_list:        # undo the previous action
+            tempAction = self.action_list.pop()
+            if tempAction.get_action_type() == ACTION_TEXT:
+                self.text_action_list.pop()
+                if tempAction in self.text_action_info:
+                    del self.text_action_info[tempAction]
+        else:       # back to select area
+            self.window.set_cursor(ACTION_WINDOW)
+            self.window.magnifier = None
+            self.action = ACTION_WINDOW
+            self.x = self.y = self.rect_width = self.rect_height = 0
+            self.window_flag = True
+            self.drag_flag = False
+            if self.show_colorbar_flag:
+                self.toolbar.set_all_inactive()
+            self.window.hide_toolbar()
+            self.window.hide_colorbar()
+        self.window.refresh()
+        
+    def get_rectangel(self):
+        '''
+        get select rectangle
+        @return: a tuple contain the selected area coordinate.
+        '''
+        return (int(self.x), int(self.y), int(self.rect_width), int(self.rect_height))
+    
+    def get_rectangel_in_monitor(self):
+        '''
+        get select rectangle in the monitor
+        @return: a tuple contain the selected area coordinate in this monitor.
+        '''
+        return (int(self.x-self.monitor_x), int(self.y-self.monitor_y),
+                int(self.rect_width), int(self.rect_height))
+    
+    def get_monitor_info(self):
+        '''
+        get monitor info
+        @return: a tuple contain this monitor coordinate.
+        '''
+        return (self.monitor_x, self.monitor_y, self.width, self.height)
 
-
-    def grabFocus(self):
-        self._grabFocusTimer.start()
-
-    def ungrabFocus(self):
-        self._grabPointerStatus = False
-        self._grabKeyboardStatus = False
-        self.setMouseGrabEnabled(False)
-        self.setKeyboardGrabEnabled(False)
-
-    @pyqtSlot(str,str,result="QVariant")
-    def get_save_config(self, group_name,op_name):
-        return self._settings.getOption(group_name, op_name)
-
-    @pyqtSlot(str,str,str)
-    def set_save_config(self,group_name,op_name,op_index):
-        self._settings.setOption(group_name, op_name, op_index)
-
-    @pyqtSlot(int,int,int,int)
-    def save_screenshot(self, x, y, width, height):
-        pixmap = QPixmap.fromImage(self.grabWindow())
-        pixmap = pixmap.copy(x, y, width, height)
-        pixmap.save(SAVE_DEST_TEMP)
-
-        self.hide()
-        saveScreenshot(pixmap)
-
-        if self._settings.showOSD: self.showHotKeyOSD()
-
-    @pyqtSlot()
-    def enable_zone(self):
-        try:
-            iface = QDBusInterface("com.deepin.daemon.Zone", "/com/deepin/daemon/Zone", '', QDBusConnection.sessionBus())
-            iface.asyncCall("EnableZoneDetected", True)
-        except:
-            pass
-
-    @pyqtSlot()
-    def disable_zone(self):
-        try:
-            iface = QDBusInterface("com.deepin.daemon.Zone", "/com/deepin/daemon/Zone", '', QDBusConnection.sessionBus())
-            iface.asyncCall("EnableZoneDetected", False)
-        except:
-            pass
-
-    @pyqtSlot()
-    def share(self):
-        socialSharingInterface.share("", SAVE_DEST_TEMP)
-
-    @pyqtSlot(int, int, str, result=bool)
-    def checkKeySequenceEqual(self, modifier, key, targetKeySequence):
-        keySequence = QKeySequence(modifier + key).toString()
-        return keySequence == targetKeySequence
-
-    @pyqtSlot(int, int, result=str)
-    def keyEventToQKeySequenceString(self, modifier, key):
-        keySequence = QKeySequence(modifier + key).toString()
-        return keySequence
-
-    def _handleOSDTimeout(self):
-        self._osdShowing = False
-        if self._quitOnOsdTimeout:
-            qApp.quit()
-
-    def showHotKeyOSD(self):
-        self._osdShowing = True
-        self._osdShowed = True
-        self.rootObject().showHotKeyOSD()
-        self.rootObject().osdTimeout.connect(self._handleOSDTimeout)
-
-    def showWindow(self):
-        self.showFullScreen()
-        self.grabFocus()
-
-    @pyqtSlot()
-    def closeWindow(self):
-        self.enable_zone()
-        unregister_service()
-        self.close()
-
-        if self._settings.showOSD:
-            if not self._osdShowed:
-                self.showHotKeyOSD()
-            elif self._osdShowing:
-                self._quitOnOsdTimeout = True
-            else:
-                qApp.quit()
-        else:
-            qApp.quit()
-
-
-def _actionInvoked(notificationId, actionId):
-    global view
-    global _fileSaveLocation
-
-    if _notificationId == notificationId:
-        if actionId == ACTION_ID_OPEN:
-            subprocess.call(["xdg-open", os.path.dirname(_fileSaveLocation)])
-        view.closeWindow() if view else qApp.quit()
-
-def _notificationClosed( notificationId, reason):
-    global view
-    if _notificationId == notificationId:
-        view.closeWindow() if view else qApp.quit()
-
-
-def _windowVisibleChanged(visible):
-    if visible:
-        controlCenterInterface.hideImmediately()
-
-def copyPixmap(pixmap):
-    global _notificationId
-    clipboard = QApplication.clipboard()
-    clipboard.clear()
-    clipboard.setPixmap(pixmap)
-
-    _notificationId = notificationsInterface.notify("Deepin Screenshot", _("Picture has been saved to clipboard"))
-
-def savePixmap(pixmap, fileName):
-    global _notificationId
-    global _fileSaveLocation
-    pixmap.save(fileName)
-
-    _fileSaveLocation = fileName
-    _notificationId = notificationsInterface.notify("Deepin Screenshot", _fileSaveLocation, [ACTION_ID_OPEN, _("View")])
-
-def saveScreenshot(pixmap):
-    global settings
-    global soundEffect
-    global savePathValue
-
-    soundEffect.play()
-
-    fileName = "%s%s.png" % (_("DeepinScreenshot"),
-                             time.strftime("%Y%m%d%H%M%S", time.localtime()))
-    save_op = settings.getOption("save", "save_op")
-    save_op_index = int(save_op)
-
-    absSavePath = os.path.abspath(savePathValue)
-    if savePathValue and os.path.exists(os.path.dirname(absSavePath)):
-        savePixmap(pixmap, absSavePath)
-    else:
-        saveDir = ""
-        copy = False
-        if save_op_index == 0: #saveId == "save_to_desktop":
-            saveDir = QStandardPaths.writableLocation(QStandardPaths.DesktopLocation)
-        elif save_op_index == 1: #saveId == "auto_save" :
-            saveDir = QStandardPaths.writableLocation(QStandardPaths.PicturesLocation)
-        elif save_op_index == 2: #saveId == "save_to_dir":
-            saveDir = QFileDialog.getExistingDirectory()
-        elif save_op_index == 4: #saveId == "auto_save_ClipBoard":
-            copy = True
-            saveDir = QStandardPaths.writableLocation(QStandardPaths.PicturesLocation)
-        else: copy = True
-
-        if copy: copyPixmap(pixmap)
-        if saveDir: savePixmap(pixmap, os.path.join(saveDir, fileName))
 
 def main():
-    global view
-    global settings
-    global windoInfo
-    global menu_controller
+    ''' main function '''
+    gtk.gdk.threads_init()
+    DeepinScreenshot()
+    gtk.main()
 
-    cursor_pos = QCursor.pos()
-    desktop = qApp.desktop()
-    screen_num = desktop.screenNumber(cursor_pos)
-    screen_geo = desktop.screenGeometry(screen_num)
-    pixmap = qApp.primaryScreen().grabWindow(0)
-    pixmap = pixmap.copy(screen_geo.x(), screen_geo.y(), screen_geo.width(), screen_geo.height())
-    pixmap.save(TMP_IMAGE_FILE)
-
-    settings.showOSD = startFromDesktopValue
-    settings.tmpImageFile = TMP_IMAGE_FILE
-    menu_controller = MenuController()
-    windoInfo = WindowInfo(screen_num)
-
-    notificationsInterface.ActionInvoked.connect(_actionInvoked)
-    notificationsInterface.NotificationClosed.connect(_notificationClosed)
-
-    if fullscreenValue:
-        saveScreenshot(pixmap)
-    elif topWindowValue:
-        wInfos = windoInfo.get_windows_info()
-        if len(wInfos) > 0:
-            wInfo = wInfos[0]
-            pix = pixmap.copy(wInfo[0] - screen_geo.x(), wInfo[1] - screen_geo.y(), wInfo[2], wInfo[3])
-            saveScreenshot(pix)
-    else:
-        view = Window(settings, windoInfo)
-        view.setX(screen_geo.x())
-        view.setY(screen_geo.y())
-        view.setWidth(screen_geo.width())
-        view.setHeight(screen_geo.height())
-        view.visibleChanged.connect(_windowVisibleChanged)
-
-        qml_context = view.rootContext()
-        qml_context.setContextProperty("windowView", view)
-        qml_context.setContextProperty("qApp", qApp)
-        qml_context.setContextProperty("screenWidth", view.window_info.screen_width)
-        qml_context.setContextProperty("screenHeight", view.window_info.screen_height)
-        qml_context.setContextProperty("_menu_controller", menu_controller)
-
-        view.setSource(QUrl.fromLocalFile(MAIN_QML))
-        view.disable_zone()
-        view.showWindow()
-
-        menu_controller.preMenuShow.connect(view.ungrabFocus)
-        menu_controller.postMenuHide.connect(view.grabFocus)
-
-if __name__ == "__main__":
-    parser = QCommandLineParser()
-    parser.addHelpOption()
-    parser.addVersionOption()
-
-    delayOption = QCommandLineOption(["d", "delay"],
-        "Take a screenshot after NUM seconds", "NUM")
-    fullscreenOption = QCommandLineOption(["f", "fullscreen"],
-        "Take a screenshot of the whole screen")
-    topWindowOption = QCommandLineOption(["w", "top-window"],
-        "Take a screenshot of the most top window")
-    savePathOption = QCommandLineOption(["s", "save-path"],
-        "Specify a path to save the screenshot", "PATH")
-    startFromDesktopOption = QCommandLineOption(["i", "icon"],
-        "Indicate that this program's started by clicking desktop file.")
-
-    parser.addOption(delayOption)
-    parser.addOption(fullscreenOption)
-    parser.addOption(topWindowOption)
-    parser.addOption(savePathOption)
-    parser.addOption(startFromDesktopOption)
-    parser.process(app)
-
-    delayValue = int(parser.value(delayOption) or 0)
-    fullscreenValue = bool(parser.isSet(fullscreenOption) or False)
-    topWindowValue = bool(parser.isSet(topWindowOption) or False)
-    savePathValue = str(parser.value(savePathOption) or "")
-    startFromDesktopValue = bool(parser.isSet(startFromDesktopOption) or False)
-
-    if is_service_exist():
-        notificationsInterface.notify("Deepin Screenshot",
-            _("Deepin Screenshot has been started!"))
-    else:
-        QTimer.singleShot(max(0, delayValue * 1000), main)
-
-        signal.signal(signal.SIGINT, signal.SIG_DFL)
-        sys.exit(app.exec_())
+if __name__ == '__main__':
+    main()
