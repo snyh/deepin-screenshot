@@ -1,6 +1,7 @@
 PREFIX = /usr
 
 all:
+	#pull request test
 	deepin-generate-mo locale/locale_config.ini
 install:
 	mkdir -p ${DESTDIR}${PREFIX}/bin
